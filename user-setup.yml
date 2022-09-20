@@ -1,0 +1,103 @@
+---
+# vim: et:ts=2:sw=2:sts=2
+
+- hosts: all
+
+  vars:
+    key_dir: ssh-keys
+    users:
+      - name: lars
+        key: |
+          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF12ipnI7yVmLVfh0c27B4tz1boQ8fuZem+6SFWGgxLH Lars Kiesow <lars@kiesow.io> (pc.home.lkiesow.io)
+          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIASQEPmkcGUPWujDUtEGQt1zieBOdTK3znT1IpmKyA/O Lars Kiesow <lars@kiesow.io> (t470s)
+
+
+  tasks:
+    - name: create users
+      user:
+        name: '{{ item.name }}'
+        shell: /bin/false
+      loop: '{{ users }}'
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: set up authorized keys
+      authorized_key:
+        user: '{{ item.name }}'
+        state: present
+        key: '{{ item.key }}'
+        exclusive: true
+      loop: '{{ users }}'
+      loop_control:
+        label: "{{ item.name }}"
+
+
+    # detect and remove old users
+
+    - name : detect old users
+      find:
+        paths: /home/
+        recurse: false
+        file_type: directory
+      register: system_users
+
+    - name: remove old users
+      user:
+        name: '{{ item.pw_name }}'
+        state: absent
+        remove: true
+      loop: "{{ system_users.files }}"
+      when: item.pw_name not in (users | map(attribute='name'))
+      loop_control:
+        label: "{{ item.pw_name }}"
+
+    - name: delete old home directories
+      file:
+        state: absent
+        path: /home/{{ item.pw_name }}/
+      loop: "{{ system_users.files }}"
+      when: item.pw_name not in (users | map(attribute='name'))
+      loop_control:
+        label: "{{ item.pw_name }}"
+
+
+    # sshd options
+
+    - name: sshd config
+      lineinfile:
+        dest: /etc/ssh/sshd_config
+        regexp: '{{ item.regexp }}'
+        line: '{{ item.line }}'
+      loop:
+        - regexp: '^PasswordAuthentication '
+          line: 'PasswordAuthentication no'
+        - regexp: '^GSSAPIAuthentication '
+          line: 'GSSAPIAuthentication no'
+        - regexp: '^PermitRootLogin '
+          line: 'PermitRootLogin prohibit-password'
+        - regexp: '^KexAlgorithms '
+          line: 'KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256'
+        - regexp: '^Ciphers '
+          line: 'Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr'
+        - regexp: '^MACs '
+          line: 'MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-256,umac-128@openssh.com'
+      notify:
+        - reload sshd
+
+    - name: more sshd config
+      lineinfile:
+        dest: /etc/ssh/sshd_config
+        regexp: '^(HostKey .*{{ item }}.*)$'
+        line: '#\1'
+        backrefs: yes
+      loop:
+        - ecdsa
+      notify:
+        - reload sshd
+
+
+  handlers:
+    - name: reload sshd
+      service:
+        name: sshd
+        state: restarted
